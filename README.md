@@ -1,8 +1,20 @@
 lexical-binary
 ==============
 
-A lexicographic binary encoding. Encode strings, bytearrays, integers, lists in 
-a compact binary form preserving lexicographic sorting order.
+A lexicographic binary encoding. Encode strings, bytearrays, integers, floats, 
+and lists in a compact binary form preserving lexicographic sorting order.
+
+The sorting order isn't preserved between different types (e.g floats will 
+always sort before integers.)
+
+TODO
+----
+
+ * Handle dictionaries and sets (What would a sensible ordering be for them?)
+ * Implement something like 
+   [LCF][http://www.imada.sdu.dk/~kornerup/papers/lcf.ps.gz] to encode the 
+   rationals.
+
 
 Encoding
 ========
@@ -25,7 +37,8 @@ Each value starts with a byte in the range %x00-%x7F indicating the type.
 Strings
 -------
 
-Unicode strings are null terminated encoded using a form of [][UTF-8] modified 
+Unicode strings are null terminated encoded using a form of 
+[UTF-8][http://tools.ietf.org/html/rfc3629] modified 
 to avoid embedded %x00 null bytes.
 
 Strings begin with a single %x22 byte and end with a single %x00 null byte.
@@ -44,13 +57,13 @@ Bytes are encoded using a base128 encoding:
 
 Encoding
 
-   xxxxxxxx yyyyyyyy zzzzzzzz aaaaaaaa bbbbbbbb cccccccc dddddddd
-   1xxxxxxx 1xyyyyyy 1yyzzzzz 1zzzaaaa 1aaaabbb 1bbbbbcc 1ccccccd 1ddddddd
+    xxxxxxxx yyyyyyyy zzzzzzzz aaaaaaaa bbbbbbbb cccccccc dddddddd
+    1xxxxxxx 1xyyyyyy 1yyzzzzz 1zzzaaaa 1aaaabbb 1bbbbbcc 1ccccccd 1ddddddd
 
 Decoding
 
-   1wwwwwww 1xxxxxxx 1yyyyyyy 1zzzzzzz 1aaaaaaa 1bbbbbbb 1ccccccc 1ddddddd
-            wwwwwwwx xxxxxxyy yyyyyzzz zzzzaaaa aaabbbbb bbcccccc cddddddd
+    1wwwwwww 1xxxxxxx 1yyyyyyy 1zzzzzzz 1aaaaaaa 1bbbbbbb 1ccccccc 1ddddddd
+             wwwwwwwx xxxxxxyy yyyyyzzz zzzzaaaa aaabbbbb bbcccccc cddddddd
 
 
 Integers
@@ -96,10 +109,4 @@ Floats begin with a single %x23 byte which is followed by 8 bytes.
 Lexicographic comparison of this encoding will be slightly different to IEEE 
 floats: -0 will sort before 0, NAN will sort after INF, and -NAN will sort 
 before -INF.
-
-
-[UTF-8]: http://tools.ietf.org/html/rfc3629 (
-    UTF-8, a transformation format of ISO 10646
-)
-
 
