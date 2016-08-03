@@ -1,80 +1,67 @@
 import struct
 import StringIO
 
-def dump(stream, value):
-    if isinstance(value, bytes):
-        return encode_bytes(stream, value)
-    elif isinstance(value, unicode):
-        return encode_string(stream, value)
-    elif value is False:
-        return encode_false(stream)
-    elif value is True:
-        return encode_true(stream)
-    elif isinstance(value, (int, long)):
-        return encode_integer(stream, value)
-    elif isinstance(value, (tuple, list)):
-        return encode_list(stream, value)
-    elif isinstance(value, float):
-        return encode_float(stream, value)
-    elif value is None:
-        return encode_none(stream)
+def continued_fraction(result, numerator, denominator):
+    a, b = divmod(numerator, denominator)
+    result.append(a)
+    if b:
+        continued_fraction(result, denominator, b)
+    return result
+
+
+def write8(stream, value, xor):
+    stream.write(struct.pack(">B", value ^ xor))
+    return stream
+
+
+def encode_term(stream, value, continued, xor):
+    if value < 16:
+        return write8(stream, 0x80 | (value << 1) | continued, xor)
+
+    exp = value.bit_length() - 1
+    exp_bits = exp.bit_length()
+    exp_bytes = (exp_bits + 2) // 7
+
+    if exp_bytes == 0:
+        write8(stream, 0xA0 | exp, xor)
+    elif exp_bytes < 6:
+        b0 = (0xA0, 0xB0, 0xB8, 0xBC, 0xBE)[exp_bytes]
+        b0 |= exp >> (exp_bytes * 8)
+        write8(stream, b0, xor)
+        for i in range(exp_bytes):
+            write8(stream, 0xFF & (exp >> (8 * (exp_bytes - 1 - i))), xor)
     else:
-        raise ValueError("Don't know how to encode " + str(type(value)))
+        # In theory the encoding format supports numbers larger than
+        # 2 ^ (2 ^ 33). However it's unlikely that it will be necessary
+        # to do so.
+        raise ValueError("Number is too large")
 
+    value <<= (7 - ((exp - 6) % 7)) % 7
+    shift = value.bit_length() - 7
+    mask = (1 << (shift + 6)) - 1
+    value &= mask
+    while True:
+        b = (value >> shift) << 2
+        mask >>= 6
+        shift -= 1
+        value &= mask
+        if not value:
+            return write8(stream, b | continued, xor)
+        b |= 2 | (value >> shift)
+        shift -= 6
+        mask >>= 1
+        value &= mask
+        write8(stream, b, xor)
 
-def dumps(value):
-    return dump(StringIO.StringIO(), value).getvalue()
-
-
-def loads(data):
-    return decode(data, 0)[0]
-
-
-def decode(data, offset):
-    decoders = {
-        0x10: decode_none,
-        0x11: decode_false,
-        0x12: decode_true,
-        0x20: decode_bytes,
-        0x21: decode_list,
-        0x22: decode_string, 
-        0x23: decode_float,
-        0x24: decode_negative_integer,
-        0x25: decode_positive_integer,
-    }
-    code, = struct.unpack_from(">B", data, offset)
-    return decoders[code](data, offset + 1)
-
-
-def encode_none(stream):
-    stream.write(b"\x10")
-    return stream
-
-
-def decode_none(data, offset):
-    return (None, offset)
-
-
-def encode_false(stream):
-    stream.write(b"\x11")
-    return stream
-
-
-def decode_false(data, offset):
-    return (False, offset)
-
-
-def encode_true(stream):
-    stream.write(b"\x12")
-    return stream
-
-
-def decode_true(data, offset):
-    return (True, offset)
-
+def encode_ratio(stream, value, xor):
+    numerator, denominator = value
+    terms = continued_fraction([], numerator, denominator)
+    for term in terms[:-1]:
+        encode_term(stream, term, 1, xor)
+        xor ^= 0xFF
+    return encode_term(stream, terms[-1], 0, xor)
 
 def encode_string(stream, value):
-    stream.write(b"\x22")
     array = bytearray(value, "UTF-8")
     for i in range(len(array)):
         array[i] += 1
@@ -120,7 +107,6 @@ def unescape_bytes(value8_uint64be):
 
 
 def encode_bytes(stream, value):
-    stream.write(b"\x20")
     input_buffer = bytearray(value)
     # Pad input for escaping
     input_buffer.extend(b"\x00" * 7)
@@ -164,94 +150,18 @@ def decode_bytes(data, offset):
     return (bytes(output_buffer[:output_len]), end_index + 1)
 
 
-def encode_integer(stream, value):
-    positive = value >= 0
-    if not positive:
-        value = -1 - value
-    
-    output_len = max(1, (value.bit_length() + 6) // 7) 
-    output_buffer = bytearray(output_len)
-    output_buffer[0] = value & 0x7F
-    output_offset = 1
-    value >>= 7
-    while value:
-        output_buffer[output_offset] = 0x80 | (value & 0x7F)
-        output_offset += 1
-        value >>= 7
-    output_buffer.reverse()
-    
-    if positive:
-        stream.write(b"\x25")
-        stream.write(output_buffer)
-    else:
-        for i in range(output_len):
-            output_buffer[i] ^= 0xFF        
-        stream.write(b"\x24")
-        stream.write(output_buffer)
-    return stream
-
-
-def decode_positive_integer(data, offset):
-    byte, = struct.unpack_from(">B", data, offset)
-    value = byte & 0x7F
-    while byte & 0x80:
-        offset += 1
-        byte, = struct.unpack_from(">B", data, offset)
-        value <<= 7
-        value |= byte & 0x7F
-    return (value, offset + 1)
-
-
-def decode_negative_integer(data, offset):
-    byte, = struct.unpack_from(">B", data, offset)
-    byte = ~byte
-    value = byte & 0x7F
-    while byte & 0x80:
-        offset += 1
-        byte, = struct.unpack_from(">B", data, offset)
-        byte = ~byte
-        value <<= 7
-        value |= byte & 0x7F
-    return (-1 - value, offset + 1)
-
-
-def encode_float(stream, value):
-    stream.write(b"\x23")
-    value_uint64be, = struct.unpack(">Q", struct.pack(">d", value))
-    if value_uint64be & 0x8000000000000000:
-        value_uint64be = ~value_uint64be & 0xFFFFFFFFFFFFFFFF
-    else:
-        value_uint64be |= 0x8000000000000000
-    stream.write(struct.pack(">Q", value_uint64be))
-    return stream
-
-
-def decode_float(data, offset):
-    value_uint64be, = struct.unpack_from(">Q", data, offset)
-    if value_uint64be & 0x8000000000000000:
-        value_uint64be &= 0x7FFFFFFFFFFFFFFF
-    else:
-        value_uint64be = ~value_uint64be
-    value, = struct.unpack(">d", struct.pack(">Q", value_uint64be))
-    return (value, offset + 8)
-
-
 def encode_list(stream, value):
-    stream.write(b"\x21")
     for child in value:
         dump(stream, child)
-    stream.write(b"\x01") 
+    stream.write("\x00")
     return stream
 
 
 def decode_list(data, offset):
     result = []
     byte, = struct.unpack_from(">B", data, offset)
-    while byte != 0x01:
+    while byte != 0x00:
         child, offset = decode(data, offset)
         result.append(child)
         byte, = struct.unpack_from(">B", data, offset)
     return (tuple(result), offset + 1)
-        
-
-
