@@ -14,66 +14,64 @@ TODO
 Encoding
 ========
 
-All values start with a two bit major type.
-
-  +----+----------------------+
-  | 00 | Negative Not Numbers |
-  | 01 | Negative Numbers     |
-  | 10 | Positive Numbers     |
-  | 11 | Positive Not Numbers |
-  +----+----------------------+
-
 Numbers
 -------
 
-Numbers are encoded as a continued fraction:
+Numbers greater than one are encoded as an exponent and a mantissa followed by
+a continued fraction:
 
-    a_0 + (1 / (a_1 + (1 / a_2 .....
+    2^n + m + (1 / (a_1 + (1 / a_2 ...
 
-Each integer term in the fraction is encoded as a binary exponent and
-a mantissa:
+Numbers less than one are encoded as a exponent and a continued fraction.
 
-    a_n = 2 ^ e_n + m_n
+    2^-n * (1 / a_1 + (1 / a_2 ...
 
-The number of bytes needed to encode the exponent is encoded as a unary
-prefix. The exponent follows in binary. The mantissa is encoded with the
-most significant bits first, and is truncated if the remaining bits are
-zero.
+For positive numbers the first byte is one of:
 
-As a special case if the integer is smaller than the remaining bits in the
-first byte then then no exponent is encoded and the term itself is encoded
-in the remaining bits.
+    +----------+---------+-----------------+
+    | 10000000 | 1 Byte  | Zero            |
+    +----------+---------+-----------------+
+    | 10000001 | N bytes | 2^-1 or less    |
+    +----------+---------+-----------------+
+    | 1000001C |         |                 |
+    |    to    | 1 byte  | 1 to 47         |
+    | 110xxxxC |         |                 |
+    +----------+---------+-----------------+
+    | 1110xxxx | 2 bytes | 48 to 2047      |
+    | 1111000x | 3 bytes | 2048 to 2^16-1  |
+    | 1111001x | 4 bytes | 2^16 to 2^32-1  |
+    | 1111010x | 9 bytes | 2^32 to 2^64-1  |
+    +----------+---------+-----------------+
+    | 11110110 | 2 bytes | 2^64 to 2^191   |
+    | 11110111 | N bytes | 2^192 or more   |
+    +----------+---------+-----------------+
 
-For positive numbers the first term starts with the major type of 10
-If the integer less than 16 then the integer and a continued fraction bit
-is encoded in first byte:
 
-     0 1 2 3 4 5 6 7
-    +-+-+-+-------+-+
-    |1|0|0| Value |C|
-    +-+-+-+-------+-+
+For numbers less than 2^-256 the exponent is encoded as unary count of the
+number of bytes needed to encode the exponent, followed by the exponent
+itself followed a single bit to encode whether a continued fraction follows.
 
-    Value:
-        A four bit integer.
-    Continued Fraction Flag: C
-        Whether this is the last term of the continued fraction.
+    +-------------------------------------+
+    | 10000001 1yyyyyyC                   |
+    | 10000001 01yyyyyy yyyyyyyC          |
+    | 10000001 001yyyyy yyyyyyyy yyyyyyyC |
+    | ...                                 |
+    +-------------------------------------+
 
-Otherwise the first byte starts encoding the exponent.
 
-    +-----------------------------------------------------------------+
-    | 1010xxxx                                                        |
-    | 10110xxx xxxxxxxx                                               |
-    | 101110xx xxxxxxxx xxxxxxxx                                      |
-    | 1011110x xxxxxxxx xxxxxxxx xxxxxxxx                             |
-    | 10111110 xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx                    |
-    | 10111111 0xxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx           |
-    | 10111111 10xxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx  |
-    | ...                                                             |
-    +-----------------------------------------------------------------+
+For numbers greater than 2^64 the exponent is encoded as a unary count of the
+number of bytes needed to encode the exponent, followed by the exponent.
 
-This encoding can be extended to encode any size of exponent. The exponent
-is followed by the mantissa bytes:
+    +-------------------------------------+
+    | 11110110 yyyyyyyy                   |
+    | 11110111 0yyyyyyy yyyyyyyy          |
+    | 11110111 10yyyyyy yyyyyyyy yyyyyyyy |
+    | ...                                 |
+    +-------------------------------------+
 
+
+For numbers greater than 2^64 the exponent is followed by a mantissa. The
+mantissa can be truncated if all the low bits are 0.
 
      0 1 2 3 4 5 6 7
     +-----------+-+-+
@@ -92,15 +90,19 @@ is followed by the mantissa bytes:
             Otherwise if the Zero Flag is 1 then this is the next
             highest bit of the mantissa.
 
-Practically speaking most numbers encountered in typical programs will encode
-using one of the following forms:
+The first term may be followed by a continued fraction if the C bit is set.
+The continued fraction is encoded using a modified exp-golomb encoding.
 
-  +----------------------------------------+-----------------+---------------+
-  | 100xxxxc                               |  value < 2^4    | max 1 byte    |
-  | 1010yyyy           [xxxxxx1x] xxxxxx0c |  value < 2^16   | max 4 bytes   |
-  | 10110yyy  yyyyyyyy [xxxxxx1x] xxxxxx0c |  value < 2^2048 | max 293 bytes |
-  +----------------------------------------+-----------------+---------------+
-
+    +--------------+-------+
+    | 0            | 1     |
+    | 10x          | 2-3   |
+    | 110xx        | 4-7   |
+    | 1110xxx      | 8-15  |
+    | 111100xxxx   | 16-31 |
+    | 1111010xxxxx | 31-64 |
+    | ......       |       |
+    | 11111        | stop  |
+    +--------------+-------+
 
 Strings
 -------

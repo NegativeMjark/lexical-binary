@@ -1,6 +1,96 @@
 import struct
 import StringIO
 
+def write8(stream, value, xor):
+    stream.write(struct.pack(">B", value ^ xor))
+    return stream
+
+
+def log2(a, b):
+    s = a.bit_length() - b.bit_length()
+    if s > 0:
+        b <<= s
+    if s < 0:
+        a <<= -s
+    if a < b:
+        a <<= 1
+        s -= 1
+    return (s, a - b, b)
+
+def encode_exponent(stream, n, xor):
+    count = (n.bit_length() - 1) // 7
+    shift = 8 * count
+    while count >= 8:
+        write8(stream, 0xFF, xor)
+        count -= 8
+    write8(stream, 0xFF & ((0xFF00 >> count) | (n >> shift)), xor)
+    while shift:
+        shift -= 8
+        write8(stream, 0xFF & (n >> shift), xor)
+    return stream
+
+def encode_mantissa(stream, m, c, xor):
+    m <<= 1
+    shift = 7 * (m.bit_length() // 7)
+    mask = (1 << shift) - 1
+    while True:
+        v = m >> shift
+        v = ((0x7E & v) << 1) | (v & 1)
+        mask >>= 7
+        shift -= 7
+        m &= mask
+        if m or (v & 1):
+            write8(stream, v | 2, xor)
+        else:
+            write8(stream, v | c, xor)
+            break
+
+def encode_positive(stream, a, b, xor):
+    if a == 0:
+        return write8(stream, 0x80, xor)
+
+    if a < b:
+        n, a, b = log2(a, b)
+        n = - n
+        write8(stream, 0x81, xor)
+        c = 0 if a else 1
+        encode_exponent(stream, (n << 1) | c, 0xFF ^ xor)
+    else:
+        m, a = divmod(a, b)
+        c = 1 if a else 0
+        if m < 1 << 64:
+            m = (m << 1) | c
+            if m < 96:
+                write8(stream, 0x80 | m, xor)
+            elif m < 4096:
+                write8(stream, 0xE0 | (m >> 8), xor)
+                write8(stream, 0xFF & m, xor)
+            elif m < 1 << 17:
+                write8(stream, 0xF0 | (m >> 16), xor)
+                write8(stream, 0xFF & (m >> 8), xor)
+                write8(stream, 0xFF & m, xor)
+            elif m < 1 << 33:
+                write8(stream, 0xF2 | (m >> 32), xor)
+                for i in range(24, -1, -8):
+                    write8(stream, 0xFF & (m >> i), xor)
+            else:
+                write8(stream, 0xF4 | (m >> 64), xor)
+                for i in range(56, -1, -8):
+                    write8(stream, 0xFF & (m >> i), xor)
+        else:
+            n = m.bit_length()
+            if n < 320:
+                write8(stream, 0xF6, xor)
+                write8(stream, n - 64, xor)
+            else:
+                write8(stream, 0xF7, xor)
+                encode_exponent(stream, n, xor)
+            encode_mantissa(stream, m, c, xor)
+
+    # TODO continued fraction.
+    return stream
+
+
 def continued_fraction(result, numerator, denominator):
     a, b = divmod(numerator, denominator)
     result.append(a)
@@ -9,57 +99,6 @@ def continued_fraction(result, numerator, denominator):
     return result
 
 
-def write8(stream, value, xor):
-    stream.write(struct.pack(">B", value ^ xor))
-    return stream
-
-
-def encode_term(stream, value, continued, xor):
-    if value < 16:
-        return write8(stream, 0x80 | (value << 1) | continued, xor)
-
-    exp = value.bit_length() - 1
-    exp_bits = exp.bit_length()
-    exp_bytes = (exp_bits + 2) // 7
-
-    if exp_bytes == 0:
-        write8(stream, 0xA0 | exp, xor)
-    elif exp_bytes < 6:
-        b0 = (0xA0, 0xB0, 0xB8, 0xBC, 0xBE)[exp_bytes]
-        b0 |= exp >> (exp_bytes * 8)
-        write8(stream, b0, xor)
-        for i in range(exp_bytes):
-            write8(stream, 0xFF & (exp >> (8 * (exp_bytes - 1 - i))), xor)
-    else:
-        # In theory the encoding format supports numbers larger than
-        # 2 ^ (2 ^ 33). However it's unlikely that it will be necessary
-        # to do so.
-        raise ValueError("Number is too large")
-
-    value <<= (7 - ((exp - 6) % 7)) % 7
-    shift = value.bit_length() - 7
-    mask = (1 << (shift + 6)) - 1
-    value &= mask
-    while True:
-        b = (value >> shift) << 2
-        mask >>= 6
-        shift -= 1
-        value &= mask
-        if not value:
-            return write8(stream, b | continued, xor)
-        b |= 2 | (value >> shift)
-        shift -= 6
-        mask >>= 1
-        value &= mask
-        write8(stream, b, xor)
-
-def encode_ratio(stream, value, xor):
-    numerator, denominator = value
-    terms = continued_fraction([], numerator, denominator)
-    for term in terms[:-1]:
-        encode_term(stream, term, 1, xor)
-        xor ^= 0xFF
-    return encode_term(stream, terms[-1], 0, xor)
 
 def encode_string(stream, value):
     array = bytearray(value, "UTF-8")
