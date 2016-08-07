@@ -1,5 +1,7 @@
 import struct
 import StringIO
+import sys
+
 
 def write8(stream, value, xor):
     stream.write(struct.pack(">B", value ^ xor))
@@ -42,10 +44,45 @@ def encode_bits(stream, x, terminal, xor):
     return write8(stream, terminal, xor)
 
 
+def decode_bits(data, offset, xor):
+    m = sys.maxsize
+    nextFF = (data.find('\xff', offset) + m + 1) & m
+    next00 = (data.find('\x00', offset) + m + 1) & m
+    end = min(next00, nextFF) + 1
+    values = bytearray(data[offset:end])
+    result = 0
+    for value in values:
+        value ^= xor
+        if value == 0x01:
+            result <<= 7
+        elif value == 0xFE:
+            result <<= 7
+            result |= 0x7F
+        else:
+            result <<= 8
+            result |= value
+    return (result, end)
+
+
 def exp_golomb(value):
     count = value.bit_length()
     prefix = (1 << count) - 1
     return value ^ (prefix << (count - 1))
+
+
+def read_exp_golomb(value, bits=None):
+    if bits is None:
+        bits = value.bit_length()
+    ones = bits - (value ^ ((1 << bits) - 1)).bit_length()
+    size = ones * 2 + 1
+    left = bits - size
+    if left < 0:
+        value <<= -left
+        left = 0
+    number = value >> left
+    number |= 1 << ones
+    number &= (1 << (ones + 1)) - 1
+    return number, left
 
 
 def encode_positive(stream, c, a, b, xor):
@@ -54,7 +91,7 @@ def encode_positive(stream, c, a, b, xor):
     else:
         m, a = divmod(a, b)
         if m < 32:
-            write8(stream, c | 0x41 + m, xor)
+            write8(stream, c | 0x40 + m, xor)
         elif m < 2048:
             write8(stream, c | 0x60 + (m >> 8), xor)
             write8(stream, m & 0xFF, xor)
@@ -88,8 +125,85 @@ def encode_positive(stream, c, a, b, xor):
 
     return stream
 
+def decode(data, offset=0):
+    first = struct.unpack_from(">B", data, offset)[0]
+    first &= 0x7F
+    if first < 0x08:
+        # decode not numbers
+        pass
+    elif first < 0x78:
+        return decode_number(data, offset, first)
+    else:
+        # decode not numbers
+        pass
 
+def decode_number(data, offset, first):
+    if first & 0x40:
+        negative = False
+        xor = 0x00
+    else:
+        negative = True
+        xor = 0xFF
+    first ^= xor
+    first &= 0x7F
+    if first < 0x77:
+        if first < 0x60:
+            value = first & 0x1F
+            end = offset + 1
+        elif first < 0x70:
+            end = offset + 2
+            value = first & 0xF
+        else:
+            end = offset + first - 0x6D
+            value = 0
+        for i in range(offset + 1, end):
+            value <<= 8
+            value |= xor ^ struct.unpack_from(">B", data, i)[0]
+    else:
+        exponent, offset = decode_bits(data, offset, xor)
+        exponent, _ = read_exp_golomb(exponent)
+        value, end = decode_bits(data, offset, xor)
+        shift = exponent - value.bit_length()
+        if shift > 0:
+            value <<= shift
+        if shift < 0:
+            value >>= shift
+    peek = xor ^ struct.unpack_from(">B", data, end)[0]
+    if peek & 0x80:
+        fraction, end = decode_bits(data, end, xor)
+        left = fraction.bit_length() - 1
+        mask = (1 << left) - 1
+        fraction &= mask
+        fraction ^= mask
+        exponent, left = read_exp_golomb(fraction, left)
+        terms = []
+        fraction &= (1 << left) - 1
+        while left:
+            term, left = read_exp_golomb(fraction, left)
+            if left:
+                terms.append(term)
+                mask = (1 << left) - 1
+                fraction &= mask
+                fraction ^= mask
 
+        a, b = (0,1)
+        for term in terms[::-1]:
+            a, b = (b, term * b + a)
+
+        a += b
+        b <<= exponent
+        z = a | b
+        shift = ((z - 1) & ~z).bit_length()
+        a >>= shift
+        b >>= shift
+
+        a += b * value
+    else:
+        a = value
+        b = 1
+    if negative:
+        a = -a
+    return (a,b), end
 def encode_string(stream, value):
     array = bytearray(value, "UTF-8")
     for i in range(len(array)):
