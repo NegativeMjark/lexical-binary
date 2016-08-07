@@ -17,86 +17,76 @@ def log2(a, b):
         s -= 1
     return (s, a - b, b)
 
-def encode_exponent(stream, n, xor):
-    count = (n.bit_length() - 1) // 7
-    shift = 8 * count
-    while count >= 8:
-        write8(stream, 0xFF, xor)
-        count -= 8
-    write8(stream, 0xFF & ((0xFF00 >> count) | (n >> shift)), xor)
-    while shift:
-        shift -= 8
-        write8(stream, 0xFF & (n >> shift), xor)
-    return stream
 
-def encode_mantissa(stream, m, c, xor):
-    m <<= 1
-    shift = 7 * (m.bit_length() // 7)
-    mask = (1 << shift) - 1
-    while True:
-        v = m >> shift
-        v = ((0x7E & v) << 1) | (v & 1)
-        mask >>= 7
-        shift -= 7
-        m &= mask
-        if m or (v & 1):
-            write8(stream, v | 2, xor)
+def encode_bits(stream, x, terminal, xor):
+    if not terminal:
+        x >>= ((x - 1) & ~x).bit_length()
+    shift = x.bit_length()
+    shift -= 8
+    while shift >= 0:
+        v = (x >> shift) & 0xFF
+        if (v & 0xFE) == 0:
+            write8(stream, 0x1, xor)
+            shift -= 7
+        elif (v & 0xFE) == 0xFE:
+            write8(stream, 0xFE, xor)
+            shift -= 7
         else:
-            write8(stream, v | c, xor)
-            break
+            write8(stream, v, xor)
+            shift -= 8
+    if shift > -8:
+        v = (((x << 8) | terminal) >> (8 + shift)) & 0xFF
+        write8(stream, v, xor)
+        if v == terminal:
+            return stream
+    return write8(stream, terminal, xor)
 
-def encode_positive(stream, a, b, xor):
-    if a == 0:
-        return write8(stream, 0x80, xor)
 
+def exp_golomb(value):
+    count = value.bit_length()
+    prefix = (1 << count) - 1
+    return value ^ (prefix << (count - 1))
+
+
+def encode_positive(stream, c, a, b, xor):
     if a < b:
-        n, a, b = log2(a, b)
-        n = - n
-        write8(stream, 0x81, xor)
-        c = 0 if a else 1
-        encode_exponent(stream, (n << 1) | c, 0xFF ^ xor)
+        write8(stream, c | 0x40, xor)
     else:
         m, a = divmod(a, b)
-        c = 1 if a else 0
-        if m < 1 << 64:
-            m = (m << 1) | c
-            if m < 96:
-                write8(stream, 0x80 | m, xor)
-            elif m < 4096:
-                write8(stream, 0xE0 | (m >> 8), xor)
-                write8(stream, 0xFF & m, xor)
-            elif m < 1 << 17:
-                write8(stream, 0xF0 | (m >> 16), xor)
-                write8(stream, 0xFF & (m >> 8), xor)
-                write8(stream, 0xFF & m, xor)
-            elif m < 1 << 33:
-                write8(stream, 0xF2 | (m >> 32), xor)
-                for i in range(24, -1, -8):
-                    write8(stream, 0xFF & (m >> i), xor)
-            else:
-                write8(stream, 0xF4 | (m >> 64), xor)
-                for i in range(56, -1, -8):
-                    write8(stream, 0xFF & (m >> i), xor)
+        if m < 32:
+            write8(stream, c | 0x41 + m, xor)
+        elif m < 2048:
+            write8(stream, c | 0x60 + (m >> 8), xor)
+            write8(stream, m & 0xFF, xor)
+        elif m < 1 << 64:
+            write8(stream, c | 0x6F + ((m.bit_length() - 1)>> 3), xor)
+            for i in range(((m.bit_length()-1) >> 3), -1, -1):
+                write8(stream, 0xFF & (m >> (i << 3)), xor)
         else:
-            n = m.bit_length()
-            if n < 320:
-                write8(stream, 0xF6, xor)
-                write8(stream, n - 64, xor)
-            else:
-                write8(stream, 0xF7, xor)
-                encode_exponent(stream, n, xor)
-            encode_mantissa(stream, m, c, xor)
+            write8(stream, c | 0x77, xor)
+            encode_bits(stream, exp_golomb(m.bit_length()), 0x00, xor)
+            encode_bits(stream, m, 0x00, xor)
+    if a:
+        n, a, b = log2(a, b)
+        fraction = 1
+        mask = -1
+        n = exp_golomb(-n)
+        bits = n.bit_length() or 1
+        fraction <<= bits
+        fraction |= n ^ (mask & ((1 << bits) - 1))
+        if a == 0:
+            return encode_bits(stream, fraction, 0x00, xor)
+        while a:
+            x, y = divmod(b, a)
+            x = exp_golomb(x)
+            bits = x.bit_length() or 1
+            fraction <<= bits
+            fraction |= x ^ (mask & ((1 << bits) - 1))
+            a, b = y, a
+            mask =~ mask
+        encode_bits(stream, fraction, 0xFF & ~mask, xor)
 
-    # TODO continued fraction.
     return stream
-
-
-def continued_fraction(result, numerator, denominator):
-    a, b = divmod(numerator, denominator)
-    result.append(a)
-    if b:
-        continued_fraction(result, denominator, b)
-    return result
 
 
 

@@ -17,92 +17,50 @@ Encoding
 Numbers
 -------
 
-Numbers greater than one are encoded as an exponent and a mantissa followed by
-a continued fraction:
 
-    2^n + m + (1 / (a_1 + (1 / a_2 ...
+Numbers are encoded as an exponent and a continued fraction.
 
-Numbers less than one are encoded as a exponent and a continued fraction.
-
-    2^-n * (1 / a_1 + (1 / a_2 ...
+    a_0 + 2^-n_1 * (1 / a_1 + (1 / a_2 ...
 
 For positive numbers the first byte is one of:
 
-    +----------+---------+-----------------+
-    | 10000000 | 1 Byte  | Zero            |
-    +----------+---------+-----------------+
-    | 10000001 | N bytes | 2^-1 or less    |
-    +----------+---------+-----------------+
-    | 1000001C |         |                 |
-    |    to    | 1 byte  | 1 to 47         |
-    | 110xxxxC |         |                 |
-    +----------+---------+-----------------+
-    | 1110xxxx | 2 bytes | 48 to 2047      |
-    | 1111000x | 3 bytes | 2048 to 2^16-1  |
-    | 1111001x | 4 bytes | 2^16 to 2^32-1  |
-    | 1111010x | 9 bytes | 2^32 to 2^64-1  |
-    +----------+---------+-----------------+
-    | 11110110 | 2 bytes | 2^64 to 2^191   |
-    | 11110111 | N bytes | 2^192 or more   |
-    +----------+---------+-----------------+
+    +-----------+---------+----------------+----------------------------------+
+    | C1000000  |         |                |                                  |
+    |    to     | 1 byte  | 0 to 31        | 0x40 + a_0                       |
+    | C1011111  |         |                |                                  |
+    +-----------+---------+----------------+----------------------------------+
+    | C1100000  |         |                |                                  |
+    |    to     | 2 bytes | 32 to 2047     | 0x6000 + a_0                     |
+    | C1101111  |         |                |                                  |
+    +-----------+---------+----------------+----------------------------------+
+    | C1110000  | 3 bytes |                | Let m = ceil(log256(a_0))        |
+    |    to     |    to   | 2048 to 2^64-1 |  in ((0x70+m-2) << 8*m) + a_0    |
+    | C1110110  | 9 bytes |                |                                  |
+    +-----------+---------+----------------+----------------------------------+
+    | C1110111  | * bytes | 2^64 or more   | 0x77 [log2(a_0)] 0x00 [a_0] 0x00 |
+    +-----------+---------+----------------+----------------------------------+
+
+        Continued Fraction Flag (C):
+            This is 0 if the previous number was positive or 1 if the previous
+            number was negative. This allows allows us to distinguish this byte
+            from the start of a continued fraction.
 
 
-For numbers less than 2^-256 the exponent is encoded as unary count of the
-number of bytes needed to encode the exponent, followed by the exponent
-itself followed a single bit to encode whether a continued fraction follows.
+The bit sequences for numbers between zero and one, numbers greater than 2^64
+or continued fractions are escaped to avoid encoding 0xFF or 0x00.
 
-    +-------------------------------------+
-    | 10000001 1yyyyyyC                   |
-    | 10000001 01yyyyyy yyyyyyyC          |
-    | 10000001 001yyyyy yyyyyyyy yyyyyyyC |
-    | ...                                 |
-    +-------------------------------------+
-
-
-For numbers greater than 2^64 the exponent is encoded as a unary count of the
-number of bytes needed to encode the exponent, followed by the exponent.
-
-    +-------------------------------------+
-    | 11110110 yyyyyyyy                   |
-    | 11110111 0yyyyyyy yyyyyyyy          |
-    | 11110111 10yyyyyy yyyyyyyy yyyyyyyy |
-    | ...                                 |
-    +-------------------------------------+
+    +---------------+----------------+
+    | Input         | Output         |
+    +---------------+----------------+
+    | 0000000x y... | 00000001 xy... |
+    | xxxxxxxx y... | xxxxxxxx y...  |
+    | 1111111x y... | 11111110 xy... |
+    +---------------+----------------+
 
 
-For numbers greater than 2^64 the exponent is followed by a mantissa. The
-mantissa can be truncated if all the low bits are 0.
 
-     0 1 2 3 4 5 6 7
-    +-----------+-+-+
-    | Mantissa  |Z|C|
-    +-----------+-+-+
 
-        Mantissa:
-            The high bits of the mantissa.
-        Zero Flag: Z
-            This is 0 if all the lower bits of the mantissa are zero.
-            If this is set then this is the last byte of the mantissa.
-        Continued Fraction Flag: C
-            If the Zero Flag is 0 then this flag is 0 if this is the
-            last term of the continued fraction and this flag is 1 if
-            another term of the continued fraction follows this one.
-            Otherwise if the Zero Flag is 1 then this is the next
-            highest bit of the mantissa.
 
-The first term may be followed by a continued fraction if the C bit is set.
-The continued fraction is encoded using a modified exp-golomb encoding.
-
-    +--------------+-------+
-    | 0            | 1     |
-    | 10x          | 2-3   |
-    | 110xx        | 4-7   |
-    | 1110xxx      | 8-15  |
-    | 111100xxxx   | 16-31 |
-    | 1111010xxxxx | 31-64 |
-    | ......       |       |
-    | 11111        | stop  |
-    +--------------+-------+
 
 Strings
 -------
