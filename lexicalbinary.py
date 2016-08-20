@@ -84,6 +84,24 @@ def read_exp_golomb(value, bits=None):
     number &= (1 << (ones + 1)) - 1
     return number, left
 
+def exp2_golomb(value):
+    count = value.bit_length()
+    shift = count - 1
+    value &= (1 << shift) - 1
+    return (exp_golomb(count) << shift) | value
+
+def read_exp2_golomb(value, bits=None):
+    if bits is None:
+        bits = value.bit_length()
+    exponent, bits = read_exp_golomb(value, bits)
+    shift = (exponent - 1 - bits)
+    if shift > 0:
+        value <<= shift
+    else:
+        value >>= shift
+    result = (1 << (exponent - 1))
+    result |= value & (result - 1)
+    return result
 
 def encode_positive(stream, c, a, b, xor):
     if a < b:
@@ -101,8 +119,7 @@ def encode_positive(stream, c, a, b, xor):
                 write8(stream, 0xFF & (m >> (i << 3)), xor)
         else:
             write8(stream, c | 0x77, xor)
-            encode_bits(stream, exp_golomb(m.bit_length()), 0x00, xor)
-            encode_bits(stream, m, 0x00, xor)
+            encode_bits(stream, exp2_golomb(m), 0x00, xor)
     if a:
         n, a, b = log2(a, b)
         fraction = 1
@@ -160,14 +177,8 @@ def decode_number(data, offset, first):
             value <<= 8
             value |= xor ^ struct.unpack_from(">B", data, i)[0]
     else:
-        exponent, offset = decode_bits(data, offset, xor)
-        exponent, _ = read_exp_golomb(exponent)
-        value, end = decode_bits(data, offset, xor)
-        shift = exponent - value.bit_length()
-        if shift > 0:
-            value <<= shift
-        if shift < 0:
-            value >>= shift
+        value, offset = decode_bits(data, offset, xor)
+        value, _ = read_exp2_golomb(value)
     peek = xor ^ struct.unpack_from(">B", data, end)[0]
     if peek & 0x80:
         fraction, end = decode_bits(data, end, xor)
@@ -204,6 +215,12 @@ def decode_number(data, offset, first):
     if negative:
         a = -a
     return (a,b), end
+
+
+## Strings ##
+# Encode strings by adding one to each byte of their UTF-8 encoding.
+# End the string with a 0 byte.
+
 def encode_string(stream, value):
     array = bytearray(value, "UTF-8")
     for i in range(len(array)):
@@ -221,7 +238,16 @@ def decode_string(data, offset):
     return (array.decode("UTF-8"), end_index + 1)
 
 
+## Bytes ##
+
 def escape_bytes(value7_uint64be):
+    """Escapes seven bytes to eight bytes.
+
+    Args:
+        value7_uint64be(int): Bytes as a 56-bit bigendian unsigned integer.
+    Returns:
+        int: Escaped bytes as a 64-bit bigendian unsigned integer.
+    """
     x = value7_uint64be
     x0 = x & 0x000000000FFFFFFF
     x1 = x & 0x00FFFFFFF0000000
@@ -236,6 +262,13 @@ def escape_bytes(value7_uint64be):
 
 
 def unescape_bytes(value8_uint64be):
+    """Unescapes seven bytes from eight bytes.
+
+    Args:
+        value8_uint64be(int): Bytes as a 64-bit bigendian unsigned integer.
+    Returns:
+        int: Unescaped bytes as a 56-bit bigendian unsigned integer.
+    """
     x = value8_uint64be
     x0 = x & 0x007F007F007F007F
     x1 = x & 0x7F007F007F007F00
@@ -250,6 +283,7 @@ def unescape_bytes(value8_uint64be):
 
 
 def encode_bytes(stream, value):
+    """Encode the bytes to the stream"""
     input_buffer = bytearray(value)
     # Pad input for escaping
     input_buffer.extend(b"\x00" * 7)
@@ -292,6 +326,8 @@ def decode_bytes(data, offset):
         output_offset += 7
     return (bytes(output_buffer[:output_len]), end_index + 1)
 
+
+## Lists ##
 
 def encode_list(stream, value):
     for child in value:
