@@ -1,7 +1,112 @@
 import struct
-import StringIO
+import io
 import sys
+import fractions
+import math
 
+ENCODE_SPECIAL = {
+    None:          b"\x01\x81",
+    float("-inf"): b"\x07\x87",
+    float("inf"):  b"\x78\xF8",
+}
+
+END_OF_LIST = object()
+
+DECODE_SPECIAL = {
+    0x00: END_OF_LIST,
+    0x01: None,
+    0x02: False,
+    0x03: True,
+    0x06: float("nan"),
+    0x07: float("-inf"),
+    0x78: float("inf"),
+}
+
+
+def dumps(value):
+    return encode(io.BytesIO(), value, 0)[0].getvalue()
+
+def loads(data):
+    return decode(data, 0)[0]
+
+def encode(stream, value, previous_negative):
+    negative = False
+    if isinstance(value, list) or isinstance(value, tuple):
+        stream.write(b"\x7B\xFB"[previous_negative])
+        previous_negative = 0
+        for v in value:
+            stream, previous_negative = encode(stream, v, previous_negative)
+        stream.write(b"\x00\x80"[previous_negative])
+    elif isinstance(value, bytes):
+        stream.write(b"\x7A\xFA"[previous_negative])
+        encode_bytes(stream, value)
+    elif isinstance(value, unicode):
+        stream.write(b"\x79\xF9"[previous_negative])
+        encode_string(stream, value)
+    elif isinstance(value, bool):
+        # We can't handle bools using ENCODE_SPECIAL because False == 0 and
+        # 1 == True.
+        stream.write((b"\x02\x82",b"\x03\x83")[value][previous_negative])
+    elif value in ENCODE_SPECIAL:
+        stream.write(ENCODE_SPECIAL[value][previous_negative])
+    else:
+        if isinstance(value, float):
+            if math.isnan(value):
+                # We handle NaN here rather than using ENCODE_SPECIAL since
+                # NaN can't be used as a dictionary key since NaN != NaN.
+                stream.write(b"\x06\x86"[previous_negative])
+                return stream, False
+            # Handle -0.0 by copying the sign to 1. We can't use ENCODE_SPECIAL
+            # because -0.0 == 0.0.
+            negative = math.copysign(1, value) < 0
+        else:
+            negative = value < 0
+
+        value = fractions.Fraction(value)
+        if negative:
+            xor = 0xFF
+            value = -value
+            previous_negative = not(previous_negative)
+        else:
+            xor = 0
+
+        encode_positive(
+            stream, previous_negative, value.numerator, value.denominator, xor
+        )
+    return stream, negative
+
+
+def decode(data, offset=0):
+    first, = struct.unpack_from(">B", data, offset)
+    first &= 0x7F
+    if first in DECODE_SPECIAL:
+        return (DECODE_SPECIAL[first], offset + 1)
+    elif first == 0x3F:
+        peek, = struct.unpack_from(">B", data, offset + 1)
+        if peek & 0x80:
+            return (float("-0"), offset + 1)
+        else:
+            return decode_number(data, offset, first)
+    elif 0x8 <= first < 0x78:
+        return decode_number(data, offset, first)
+    elif first == 0x79:
+        return decode_string(data, offset + 1)
+    elif first == 0x7A:
+        return decode_bytes(data, offset + 1)
+    elif first == 0x7B:
+        result = []
+        offset += 1
+        while True:
+            value, offset = decode(data, offset)
+            if value is END_OF_LIST:
+                return tuple(result), offset
+            else:
+                result.append(value)
+    else:
+        raise ValueError("Invalid value byte %x at offset %d" % (first, offset))
+
+
+## Numbers ##
 
 def write8(stream, value, xor):
     stream.write(struct.pack(">B", value ^ xor))
@@ -98,12 +203,13 @@ def read_exp2_golomb(value, bits=None):
     if shift > 0:
         value <<= shift
     else:
-        value >>= shift
+        value >>= -shift
     result = (1 << (exponent - 1))
     result |= value & (result - 1)
     return result
 
 def encode_positive(stream, c, a, b, xor):
+    c <<= 7
     if a < b:
         write8(stream, c | 0x40, xor)
     else:
@@ -142,18 +248,6 @@ def encode_positive(stream, c, a, b, xor):
 
     return stream
 
-def decode(data, offset=0):
-    first = struct.unpack_from(">B", data, offset)[0]
-    first &= 0x7F
-    if first < 0x08:
-        # decode not numbers
-        pass
-    elif first < 0x78:
-        return decode_number(data, offset, first)
-    else:
-        # decode not numbers
-        pass
-
 def decode_number(data, offset, first):
     if first & 0x40:
         negative = False
@@ -177,8 +271,9 @@ def decode_number(data, offset, first):
             value <<= 8
             value |= xor ^ struct.unpack_from(">B", data, i)[0]
     else:
-        value, offset = decode_bits(data, offset, xor)
-        value, _ = read_exp2_golomb(value)
+        value, end = decode_bits(data, offset + 1, xor)
+        value = read_exp2_golomb(value)
+
     peek = xor ^ struct.unpack_from(">B", data, end)[0]
     if peek & 0x80:
         fraction, end = decode_bits(data, end, xor)
@@ -208,13 +303,12 @@ def decode_number(data, offset, first):
         a >>= shift
         b >>= shift
 
-        a += b * value
-    else:
-        a = value
-        b = 1
+        value += fractions.Fraction(a, b)
+
     if negative:
-        a = -a
-    return (a,b), end
+        value = -value
+
+    return value, end
 
 
 ## Strings ##

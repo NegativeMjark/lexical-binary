@@ -14,6 +14,32 @@ TODO
 Encoding
 ========
 
+Overview
+--------
+
+The first byte of a value indicates the type of value it is. The high bit is
+used to indicate that this isn't a conintued fraction following on from a
+numeric value. This means that a new value can start immediately after an
+integer value.
+
+    +---------------+-----------------+
+    | 0x00          | End of List     |
+    | 0x01          | Null            |
+    | 0x02          | False           |
+    | 0x03          | True            |
+    | 0x04 to 0x05  | RESERVED        |
+    | 0x06          | NaN             |
+    | 0x07          | -Infinity       |
+    | 0x08 to 0x3F  | Negative number |
+    | 0x40 to 0x77  | Positive number |
+    | 0x78          | +Infinity       |
+    | 0x79          | String          |
+    | 0x7A          | Bytes           |
+    | 0x7B          | List            |
+    | 0x7C to 0x7F  | RESERVED        |
+    +---------------+-----------------+
+
+
 Numbers
 -------
 
@@ -23,7 +49,7 @@ or negative. Negative values are encoded in the same way as postive values but
 with the meaning of the bits inverted. This means that negative numbers with
 bigger magnitudes sort before negative numbers with smaller magnitudes.
 
-Postive numbers are encoded as an integer, an exponent and a continued fraction.
+Postive numbers are encoded as an integer, and an optional continued fraction.
 
     a_0 + 2^-n_1 * (1 / a_1 + (1 / a_2 ...
 
